@@ -1,0 +1,156 @@
+
+# See PDF diagram of test setup for ARMv7
+#NFS Client Setup - base environment Ubuntu 12.10, nfs-client built from 
+# 13.10 source deb packages.
+
+# NFS Client - if your target distro supports nfs-client package install (i.e.
+# apt-get install nfs-clinet) then save time and use that, otherwise -
+o must build 'rpcbind' portmapper for NIS services
+o            'rpc.statd' or statd - the client FS lock and access daemon
+o rpcbind must run before statd, 'statd' uses NIS portmapper services of 
+  'rpcbind' to discover NIS port for NFS on the server
+o mount.nfs
+o rpcbind, rpc.statd, mount.nfs install in /sbin
+
+These dep packages were cross-compiled on Ubuntu 13.10 (nfs-utils-1.2.8).
+The build process is time consuming with some circular package dependencies,
+the binaries and libraries are provided.
+
+# Libraries
+In '/lib' link
+libgssglue.so.1 -> libgssglue.so.1.0.0
+libnsl.so.1 -> libnsl-2.15.so
+libnsl.so -> libnsl.so.1
+libwrap.so.0 -> libwrap.so.0.7.6
+libwrap.so.0.0 -> libwrap.so.0.7.6
+libtirpc.so -> libtirpc.so.1.0.10
+libtirpc.so.1 -> libtirpc.so.1.0.10
+
+mkdir -p /var/lib/nfs
+
+# create /etc/netconfig
+udp        tpi_clts      v     inet     udp     -       -
+tcp        tpi_cots_ord  v     inet     tcp     -       -
+udp6       tpi_clts      v     inet6    udp     -       -
+tcp6       tpi_cots_ord  v     inet6    tcp     -       -
+rawip      tpi_raw       -     inet      -      -       -
+local      tpi_cots_ord  -     loopback  -      -       -
+unix       tpi_cots_ord  -     loopback  -      -       -
+
+# put into some startup script
+rpcbind
+statd -L
+
+#NFS Server Setup - any x86_64 Ubunuty with nfs-server installed
+# add to '/etc/exports' (Ubunut 13.10 - Saucy), using 192.168.* example.
+/srv/ 192.168.*(rw,sync,no_root_squash,no_subtree_check,insecure)
+
+service --status-all 2>&1 | grep nfs
+service nfs-kernel-server restart # or /etc/init.d/nfs-kernel-server restart
+showmount -e <IP> # should have mounts exported
+
+# On Client
+mount.nfs -w 192.168.10.10:/srv /mnt
+
+# Server '/srv/migration' contents
+  o qemu-system-arm, guest[1,2].root, gueset-a15.dtb (for VExpress) 
+    guest zImage. Few root images to run multiple migrations
+  - The guest rootfs, dtb, zImage - pretty much what you use now to bring
+    up a guest - just place them in share mount.
+
+# -savedirtylog qemu option added - to save DRAM in /root, first 
+# do '> /root/ramimage0' on source/dest nodes after migration run 'sum -r 
+# ramimage0' on both nodes - check integrity
+
+# ARMv7
+# VExpress Machine Model - command syntax (must compile support for virtio)
+
+Dest: 
+/mnt/migration/qemu-system-arm -savedirtylog -enable-kvm -smp 2 -kernel /mnt/migration/zImage -dtb /mnt/migration/guest-a15.dtb -m 1792 -M vexpress-a15 -cpu cortex-a15 -nographic -append "root=/dev/vda rw console=ttyAMA0 rootwait" -drive if=none,file=/mnt/migration/guest1.root,id=vm1 -device virtio-blk-device,drive=vm1 -netdev type=tap,id=net0,ifname=tap0 -device virtio-net-device,netdev=net0,mac="52:54:00:12:34:58" -incoming tcp:0:4321
+
+Source:
+/mnt/migration/qemu-system-arm -savedirtylog -enable-kvm -smp 2 -kernel /mnt/migration/zImage -dtb /mnt/migration/guest-a15.dtb -m 1792 -M vexpress-a15 -cpu cortex-a15 -nographic -append "root=/dev/vda rw console=ttyAMA0 rootwait" -drive if=none,file=/mnt/migration/guest1.root,id=vm1 -device virtio-blk-device,drive=vm1 -netdev type=tap,id=net0,ifname=tap0 -device virtio-net-device,netdev=net0,mac="52:54:00:12:34:58"
+
+# machvirt - 'dummy virtual machine'
+/mnt/migration/qemu-system-arm-opt -savedirtylog -enable-kvm -smp 2 -kernel /mnt/migration/zImage -m 1792 -M virt -cpu cortex-a15 -nographic -append "root=/dev/vda rw console=ttyAMA0 rootwait" -drive if=none,file=/mnt/migration/gauss.root,id=vm1 -device virtio-blk-device,drive=vm1 -netdev type=tap,id=net0,ifname=tap0 -device virtio-net-device,netdev=net0,mac="52:54:00:12:34:58" -incoming tcp:0:4321
+
+/mnt/migration/qemu-system-arm-opt -savedirtylog -enable-kvm -smp 2 -kernel /mnt/migration/zImage -m 1792 -M virt -cpu cortex-a15 -nographic -append "root=/dev/vda rw console=ttyAMA0 rootwait" -drive if=none,file=/mnt/migration/gauss.root,id=vm1 -device virtio-blk-device,drive=vm1 -netdev type=tap,id=net0,ifname=tap0 -device virtio-net-device,netdev=net0,mac="52:54:00:12:34:58"
+
+# Tests performed on two Exynos5440 4-way SMP, emulator not really fit for 
+# migration, initial tests without dirty page logging succeeded on light loads.
+# but you can still try and use FastModels.
+#
+# On source 
+# run very simple './dirtyram.arm' binary 
+# Total RAM 409600 pages -->  ~1.7GB, dirty 2048 pages or every 200'th page 
+# with interval of 30mS. You can run multiple copies, cause swapping but 
+# if dirty rate exceeds copy rate, migration won't converge. Same program
+# can be used on host to get system into paging stress mmu-notifiers 
+# (check memory overcommit with swapon -s)
+  # 
+  o ./dirtyram.arm 409600 2048 30 & 
+  o ./writedate.sh	# print time on target resume with same time on dest.
+  o Source command: break in ^ac; issue migrate -d tcp:<IP:port>
+
+# Copy lmbench/multiarch/lmbench3 -or- no-multiarch to guest FS, depending on
+# distro type. To compare you can also copy to host. 
+# Run lmbench while migrating
+# Configure (if you don't change VM virtual hw between runs configure once)
+# configure to likely performance specs
+  o cd lmbench3/src; ../scripts/config-run
+# Run benchmark
+  o rm -rf /vart/tmp/lmbench or /tmp ... i.e. the lmbench results dir.
+  o ../scripts/results
+# Run a high memory dirty rate with LMBench running to provide some sense of 
+# performance during migration. So far no real performance benchmarks have been
+# compiled. Migration time (if ever) will vary on hw and what lmbench is doing.
+  o ./dirtyram.arm 409600 2048 5 & 
+  o migrate 
+
+# Basic Network test - see configuration used in pdf. Example limited due ot
+# number of interfaces - no public, image/storage, ... interfaces, one 
+# interface shared.
+# 
+Source host IP 192.168.10.101/24, VM tap0 192.168.2.1/24 and
+VM eth0 192.168.2.100/24 with default route 192.168.2.1
+
+Destination host IP 192.168.10.100/24, VM same settings as above.
+Both VMs have identical MAC addresses.
+
+Initially NFS server route to 192.168.2.100 is via 192.168.10.101
+- ssh 192.168.2.100
+- start migration from source to destination
+- after migration ends
+- on NFS server switch routes.
+   route add -host 192.168.2.100 gw 192.168.10.100
+
+ssh should resume after route switch. ping as well should work seamlessly.
+
+# Bring up on ARMv8
+# Currently there is small overlap with ARMv8 2nd stage page fault handling,
+# kernel was compiled for ARMv8 to verify it comes up and can run some 
+# memory tests (i.e. make sure nothing is broke). 
+#
+# Minimal work required to enable dirty page logging for ARMv8,
+# but migration may require quite a bit more work. This assumes you used
+# Foundation Model, and kvmtool before 
+#  - https://wiki.ubuntu.com/ARM64/FoundationModel is helpful. Also see
+# virtual open systems.
+
+Foundation_v8 --image ./image-foundation_NFS.axf --network=net
+./lkvm-static run --kernel Image -d rootfs.img -m 512 --console virtio --params "earlyprintk=smh console=hvc0 rw root=/dev/vda"
+
+# x86_64 - basic migrate regression test, there is greater patch overlap
+#       with x86_64 then other architectures, and x86_64 HW is easily available.
+# 	This test validated local migration with a light load 
+#	(./dirtyram.arm 409600 2048 250) - tested on Ubuntu 13.10, HP Z620 
+qemu-system-x86_64 -enable-kvm -smp 2 -m 1024 --kernel ./bzImage-3.16.0-rc1 \
+	-initrd intird.img-3.16.0-rc1-custom \
+	-drive file=./guest.img,if=none,id=vm1 \
+	-device virtio-blk-pci,drive=vm1 \
+	-append "root=/dev/vda rw init=/sbin/init console=ttyS0 rootwait" \
+	-nographic
+
+# For destination the usual option, then from source VM migrate using loopaback
+ --incoming tcp:0:321
+
