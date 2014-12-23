@@ -1,0 +1,74 @@
+Mario Smarduch - m.smarduch@samsusng.com
+Open Source Group - Samsung Research America - Silicon Valley
+Dec 22, 2014
+
+DIRECTIONS TO VERIFY Dirty Page Logging for armv7
+=================================================
+
+TEST OPERATION
+==============
+- qemu provided is modified to support '-savedirtylog' option. This saves
+  ramimage at source after all memory has been migrated, and at destination
+  before guest is resumed.
+- The destination 'ramimage' is copy of initial ram + delta of page updates
+  dependent of kernel dirty page logging.
+- Checksums at both ends should match, unless there are some issues with
+  user space or kernel writing into guest memory without marking pages
+  dirty.
+- '-savedirtylog' saves the ram for 'virt', 'VExpress' machine models
+   
+- Similar test to armv8 is also built into armv7 except:
+  o qemu must have '-device aeshmem' option
+  o aeshmem file is in - /tmp/aeshmem
+
+ENVIRONMENT
+===========
+- Used Fast Models - FVP 9.x - 4-way
+
+RUN-TEST
+--------
+# if source/destination hosts are the same create files in same directory
+$ cd /root; 
+# create on source
+$ >ramimage0; 
+# create on destination
+$ >ramimage1
+
+
+# On destination
+$ ./qemu-system-arm-savedirtylog -enable-kvm -smp 2 \
+	-savedirtylog -m 32 -kernel ./zImage \
+	-initrd ./initrd.cpio-dirtyram.gz \
+	-dtb ./guest_a15x2.dtb -M vexpress-a15 \
+	-cpu cortex-a15 -nographic \
+	-append "earlyprintk console=ttyAMA0 mem=32M root=/dev/ram0" \
+	-incoming tcp:0:4321
+
+# On source host same command minus the '-incoming ....'
+
+# Once the guest comes up execute these commands to dirty ram 
+# 512 pages every 50ms, and 50 pages every 5ms. With bigger image or on hardware
+# can dirty larger memory ranges.
+# arg1 - initial dirty size in 4k pages
+# arg2 - periodic dirty size in 4k pages
+# arg3 - timout between writing pages in arg2
+$ cd /root
+$ ./dirtyram.arm 512 512 50 &
+$ ./dirtyram.arm 512 512 50 &
+$ ./dirtyram.arm 50 50 5 &
+
+# at terminal ^ac, run commands. The memory rate may be to aggressive run
+# 'migrate_set_downtime 3'. If you want to see migrate converge try less 
+# aggressive memory dirty rates
+
+# The '-savedirtylog' option will take a while to write ramimage0 on source
+# and ramimage1 on destination if running on Fast Models this will take about
+# 10 minutes. You could run withut the option and guest resumes immediatelly
+# with short downtimes in range of 100ms
+(qemu) migrate -d tcp:0:4321
+(qemu) info migrate
+
+	
+# Upon completion run sum both files and sums should be identical.
+$ sum -r ramimage*
+
