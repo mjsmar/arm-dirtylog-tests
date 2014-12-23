@@ -69,7 +69,7 @@ $ ./dirtyram.arm 50 50 5 &
 # and ramimage1 on destination if running on Fast Models this will take about
 # 10 minutes. You could run withut the option and guest resumes immediatelly
 # with short downtimes in range of 100ms
-(qemu) migrate -d tcp:0:4321
+(qemu) migrate -d tcp:<IP>:4321
 # check peridically if it's not converging set downtime to some value
 (qemu) info migrate
 	
