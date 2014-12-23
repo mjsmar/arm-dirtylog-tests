@@ -1,0 +1,90 @@
+Mario Smarduch - m.smarduch@samsusng.com
+Open Source Group - Samsung Research America - Silicon Valley
+Dec 22, 2014
+
+DIRECTIONS TO VERIFY Dirty Page Logging for armv8
+=================================================
+
+TEST OPERATION
+==============
+- qemu provided is modified to map in a shared memory segment as a device.
+  The share memory segment is accessible on host and starts at GPA 0x20000000
+  and is 8MB large.
+- On host 8MB file is accessible at /dev/shm/aeshmem 
+- As soon as qemu starts up it enables logging and waits for user program
+  requests to update the dirty bitmap in /home/root/dirty_bitmap
+- Guest boots up and processes are launched to dirty memory
+- host program 'migratev8' 
+  1 Does a precopy of Guest shared memory to host file '/home/root/dest_aeshmem'
+  2 sends a message to qemu to write dirty_bitmap
+  3 walks the bitmap and copies dirty pages from Guest shared memory device
+    (/dev/shm/aeshmem) to host file dest_aeshmem
+  4 migrate sleeps for a while wakes up and goes to (2)
+  5 processes on guest are killed
+  6 migratev8 eventually finds a clean bit map and exits.
+  7 both guest memory device and file on host are checksummed
+- The result of host file is pre-copy + incremental page updates from dirty
+  bitmap.
+- Both 4k and 64k pages are supported 
+
+- Limitations at this time.
+  - huge 512MB pages not tested. The shared memory device is mapped in as
+    device by guest remap pfn supports only small pages. 
+  - Future test will map one huge page to validate it gets logged and dissolved
+
+
+ENVIRONMENT
+===========
+- The host environment uses NFS and boot-wrapper 
+  o Catalin Marinas boot wrapper - read the README file for details.
+    git://git.kernel.org/pub/scm/linux/kernel/git/cmarinas/boot-wrapper-aarch64.git
+  o you need a device tree to copy over 'arch/arm64/boot/dts/rtsm_ve-aemv8.dtb'
+    Get 'fvp-foundation-gicv3-psci.dtb' from http://releases.linaro.org/latest/openembedded/aarch64/
+  o This qemu is modified to boot 64k page kernel, stock qemu will fail
+  o The kernel is modifed with TLB/VMID bug, it should be applied
+    https://lists.cs.columbia.edu/pipermail/kvmarm/2014-December/012917.html
+    Rebuild the guests and host kernel(s).
+  o To configure/build boot wrapper: 
+    - ./configure --host=aarch64-linux-gnu --with-kernel-dir=<kernel path> --enable-gicv3 --enable-psci 
+  o make
+
+- There are 4 copies of guest Images
+  o Image-4kb-39b, Image-4kb-48b, Image-64kb-42b, Image-64kb-48b
+
+- There are 4 copies of host images
+  o linux-system-4kb-39b.axf, linux-system-4kb-48b.axf,
+    linux-system-64kb-42b.axf, linux-system-64kb-48b.axf
+
+- 16 runs are needed to test all permutations of page and address space size
+  you could use these, but should build your own.
+
+- Used multiarch on Ubuntu to build qemu
+  
+RUN TEST
+--------
+# Boot Foundation Model - for example
+$ Foundation_v8 --gicv3 --image ./linux-system-4kb-48b.axf \
+	--network bridged --network-bridge=tap0 --cores=4
+
+# once host has booted create
+$ > /dev/shm/aeshmem; >/home/root/dirty_bitmap; >/home/root/dest_aeshmem 
+
+# Boot the Guest command like this, you can't put anything at GPA range
+# 0x20000000 - 0x20800000
+$ ./qemu-system-aarch64 -enable-kvm -nographic -smp 2 \
+	-kernel Image-4kb-48b -m 512 -M virt -cpu host -initrd initrd.ext3 \
+	-append "rdinit=/sbin/init console=ttyAMA0 root=/dev/ram mem=512M"
+# run the dirty page program, you could run several copies
+$ ./tstaeshm dirty 0x20000000 &
+
+# on host run migrate and it will run as long as tstaeshm(s) run.
+$ ./migratev8
+
+# on host compare checksums should differ
+$ sum -r /dev/shm/aeshmem /home/root/dest_aeshmem
+
+# on guest kill the dirty page processes, migrate should complete immediatelly
+# run checksums shoud be identical
+$ sum -r /dev/shm/aeshmem /home/root/dest_aeshmem
+
+
